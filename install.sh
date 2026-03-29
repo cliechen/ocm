@@ -20,7 +20,7 @@ missing=()
 command -v jq  &>/dev/null || missing+=("jq")
 command -v gum &>/dev/null || missing+=("gum")
 command -v fzf &>/dev/null || missing+=("fzf")
-command -v python3 &>/dev/null || missing+=("python3")
+command -v python3 &>/dev/null || missing+=("python3") # Python3 required
 command -v openclaw &>/dev/null || missing+=("openclaw")
 
 if [[ " ${missing[*]} " == *" openclaw "* ]]; then

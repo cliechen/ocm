@@ -1,81 +1,209 @@
 #!/usr/bin/env bash
 # ============================================================
-#  ocm.sh — OpenClaw Model Manager (gum UI)
-#  交互式管理 OpenClaw 的 Providers / Models / 默认模型
-#  依赖: jq, gum, fzf
-#  用法: ocm
+#  ocm — OpenClaw Model Manager v2.0
+#  交互式管理 API 供应商 / 模型 / 默认模型
+#  依赖: jq, gum, fzf, python3
+#  用法: ocm [ls|switch|status|restart|sync|help]
 # ============================================================
 set -euo pipefail
 
+VERSION="2.0.0"
 CONFIG="$HOME/.openclaw/openclaw.json"
 BACKUP="$HOME/.openclaw/openclaw.json.bak"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------- 颜色 ----------
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; B='\033[1;37m'; NC='\033[0m'
+CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+RED='\033[0;31m'; GRAY='\033[0;90m'; NC='\033[0m'
 
-# ---------- 依赖检查 ----------
-need_jq()  { command -v jq  &>/dev/null || { echo -e "${R}需要 jq${NC}"; exit 1; }; }
-need_gum() { command -v gum &>/dev/null || { echo -e "${R}需要 gum: apt install gum${NC}"; exit 1; }; }
-need_fzf() { command -v fzf &>/dev/null || { echo -e "${R}需要 fzf: apt install fzf${NC}"; exit 1; }; }
+# ---------- 依赖 ----------
+for cmd in jq gum fzf python3; do
+  command -v "$cmd" &>/dev/null || { echo -e "${RED}缺少依赖: $cmd${NC}"; exit 1; }
+done
 
-# ---------- 工具函数 ----------
+# ---------- 核心工具函数 ----------
 info() { gum style --foreground 46 "✓ $*"; }
 warn() { gum style --foreground 214 "⚠ $*"; }
-err()  { gum style --foreground 196 "✗ $*"; }
+fail() { gum style --foreground 196 "✗ $*"; }
 
 backup() {
   cp "$CONFIG" "$BACKUP"
   gum style --foreground 240 "  已备份 → $BACKUP"
 }
 
-list_providers() { jq -r '.models.providers | keys[]' "$CONFIG" 2>/dev/null; }
-get_base_url()   { jq -r ".models.providers.\"$1\".baseUrl // \"(未设置)\"" "$CONFIG"; }
-get_api_type()   { jq -r ".models.providers.\"$1\".api // \"openai-completions\"" "$CONFIG"; }
-get_api_key_mask() { local k; k=$(jq -r ".models.providers.\"$1\".apiKey // \"\"" "$CONFIG"); echo "${k:0:8}****"; }
-list_models()    { jq -r ".models.providers.\"$1\".models[]?.id // empty" "$CONFIG" 2>/dev/null; }
-get_default_model() { jq -r '.agents.defaults.model.primary // "(未设置)"' "$CONFIG"; }
-get_fallbacks()  { jq -r '(.agents.defaults.model.fallbacks // [])[]' "$CONFIG" 2>/dev/null; }
+prompt_continue() { gum input --placeholder "按回车继续" > /dev/null 2>&1 || true; }
 
-# ============================================================
-#  Provider 列表（带延迟检测）
-# ============================================================
-show_provider_list() {
-  echo ""
-  gum style --bold --foreground 51 "━━ API 供应商列表 ━━"
-  echo ""
+# ---------- JSON 快捷操作 ----------
+j() { jq -r "$1" "$CONFIG" 2>/dev/null; }
+providers_list() { j '.models.providers | keys[]'; }
+provider_url()   { j ".models.providers.\"$1\".baseUrl // \"-\""; }
+provider_api()   { j ".models.providers.\"$1\".api // \"openai-completions\""; }
+provider_key()   { local k; k=$(j ".models.providers.\"$1\".apiKey // \"\""); echo "${k:0:8}****"; }
+provider_models() { j ".models.providers.\"$1\".models[]?.id // empty"; }
+default_model()  { j '.agents.defaults.model.primary // "(未设置)"'; }
+fallback_list()  { j '(.agents.defaults.model.fallbacks // [])[]'; }
+model_count()    { provider_models "$1" | grep -c . 2>/dev/null || echo 0; }
 
-  local current
-  current=$(get_default_model)
-  echo -e "  默认模型: ${C}${current}${NC}"
-  local fc
-  fc=$(get_fallbacks | wc -l | tr -d ' ')
-  [ "$fc" -gt 0 ] && echo -e "  Fallback: ${Y}${fc}${NC} 个"
-  echo ""
+# ---------- 模型读取（本地，秒开） ----------
+list_all_models() {
+  python3 -c "
+import json, sys
+try:
+    with open('$CONFIG') as f: obj = json.load(f)
+    p = (obj.get('models') or {}).get('providers') or {}
+    a = obj.get('agents') or {}
+    pr = ((a.get('defaults') or {}).get('model') or {}).get('primary', '')
+    ms = set()
+    for pn, pd in p.items():
+        if not isinstance(pd, dict): continue
+        for m in (pd.get('models') or []):
+            if isinstance(m, dict) and m.get('id'):
+                ms.add(pn + '/' + m['id'])
+    for mid in (a.get('models') or {}): ms.add(mid)
+    for m in sorted(ms):
+        tag = '  * DEFAULT' if m == pr else ''
+        print(m + tag)
+except: pass
+" 2>/dev/null
+}
 
-  local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
+get_current_model() {
+  list_all_models | grep "DEFAULT" | sed 's/  \* DEFAULT//' | head -1
+}
 
-  if [ ${#providers[@]} -eq 0 ]; then
-    warn "没有配置任何 Provider"
-    return
-  fi
+# ---------- 状态摘要 ----------
+show_status() {
+  local dm pc fc
+  dm=$(default_model)
+  pc=$(providers_list | grep -c . 2>/dev/null || echo 0)
+  fc=$(fallback_list | grep -c . 2>/dev/null || echo 0)
 
-  for i in "${!providers[@]}"; do
-    local p="${providers[$i]}"
-    local url api key_mask model_count
-    url=$(get_base_url "$p")
-    api=$(get_api_type "$p")
-    key_mask=$(get_api_key_mask "$p")
-    model_count=$(list_models "$p" | wc -l | tr -d ' ')
-
-    printf "  ${Y}[%d]${NC} %-15s ${C}%-40s${NC}\n" "$((i+1))" "$p" "$url"
-    printf "      API: %-25s 模型: ${G}%s${NC}  Key: %s\n" "$api" "$model_count" "$key_mask"
-  done
-  echo ""
+  gum style --foreground 240 "  默认: $dm  |  供应商: $pc  |  Fallback: $fc"
 }
 
 # ============================================================
-#  添加 Provider（gum 交互式）
+#  快速切换模型（fzf）
+# ============================================================
+cmd_switch() {
+  local all_models
+  all_models=$(list_all_models)
+  [ -z "$all_models" ] && { fail "没有可用模型"; return 1; }
+
+  local current
+  current=$(echo "$all_models" | grep "DEFAULT" | sed 's/  \* DEFAULT//' | head -1)
+
+  local selected
+  selected=$(echo "$all_models" | fzf \
+    --prompt="  ❯ " \
+    --header="  当前: $current  │  ↑↓/搜索  Enter 确认  Esc 取消" \
+    --header-first \
+    --height=20 --layout=reverse --border=rounded \
+    --border-label=" ◈ 切换默认模型 " \
+    --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || return
+
+  [ -z "$selected" ] && return
+  selected=$(echo "$selected" | sed 's/  \* DEFAULT//' | awk '{print $1}')
+
+  jq --arg m "$selected" '.agents.defaults.model.primary = $m' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+  info "已切换为: $selected"
+
+  gum confirm "重启 Gateway 生效?" && {
+    gum spin --spinner minidot --title "重启中..." -- openclaw gateway restart 2>/dev/null
+    info "Gateway 已重启"
+  }
+}
+
+# ============================================================
+#  同步云端模型
+# ============================================================
+cmd_sync() {
+  local providers=()
+  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
+  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+
+  echo ""
+  gum style --bold --foreground 51 "━━ 同步云端模型 ━━"
+  echo ""
+
+  local items=("同步全部" "返回")
+  items+=("${providers[@]}")
+
+  local choice
+  choice=$(gum choose --cursor "❯ " --header "选择要同步的 Provider\n↑↓ 移动 · Enter 确认 · q 退出" "${items[@]}") || return
+  [[ "$choice" == "返回" ]] && return
+
+  if [[ "$choice" == "同步全部" ]]; then
+    for p in "${providers[@]}"; do
+      _sync_one "$p"
+    done
+  else
+    _sync_one "$choice"
+  fi
+}
+
+_sync_one() {
+  local pname="$1"
+  local url api_key
+  url=$(provider_url "$pname")
+  api_key=$(j ".models.providers.\"$pname\".apiKey // \"\"")
+
+  if [ -z "$api_key" ] || [ "$url" = "-" ]; then
+    warn "$pname: URL 或 Key 缺失，跳过"
+    return
+  fi
+
+  echo -e "  ${GRAY}同步 $pname ($url)...${NC}"
+
+  local models_json
+  models_json=$(curl -s -m 10 -H "Authorization: Bearer $api_key" "${url}/models" 2>/dev/null || true)
+
+  if [ -z "$models_json" ]; then
+    warn "$pname: 无法获取模型列表"
+    return
+  fi
+
+  local model_count
+  model_count=$(echo "$models_json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    models = data.get('data', data) if isinstance(data, dict) else data
+    ids = [m['id'] for m in models if isinstance(m, dict) and 'id' in m]
+    print(len(ids))
+except: print(0)
+" 2>/dev/null || echo 0)
+
+  if [ "$model_count" -eq 0 ]; then
+    warn "$pname: 无模型"
+    return
+  fi
+
+  backup
+  echo "$models_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+models = data.get('data', data) if isinstance(data, dict) else data
+result = []
+for m in models:
+    if isinstance(m, dict) and 'id' in m:
+        result.append({
+            'id': m['id'],
+            'name': m.get('id'),
+            'input': ['text'],
+            'contextWindow': m.get('context_length', 128000),
+            'maxTokens': 4096
+        })
+result.sort(key=lambda x: x['id'])
+print(json.dumps(result))
+" | jq --arg p "$pname" \
+  '. as $models | input | .models.providers[$p].models = $models' \
+  "$CONFIG" > "${CONFIG}.tmp" 2>/dev/null && mv "${CONFIG}.tmp" "$CONFIG"
+
+  info "$pname: 已同步 $model_count 个模型"
+}
+
+# ============================================================
+#  添加 Provider
 # ============================================================
 add_provider() {
   echo ""
@@ -83,7 +211,7 @@ add_provider() {
   echo ""
 
   local pname base_url api_key api_type
-  pname=$(gum input --placeholder "Provider 名称 (如: openai, anthropic, deepseek)" --prompt "Provider > ") || return
+  pname=$(gum input --placeholder "Provider 名称 (如: openai)" --prompt "Provider > ") || return
   [ -z "$pname" ] && { warn "名称不能为空"; return; }
 
   if jq -e ".models.providers.\"$pname\"" "$CONFIG" &>/dev/null; then
@@ -91,162 +219,89 @@ add_provider() {
   fi
 
   base_url=$(gum input --placeholder "https://api.xxx.com/v1" --prompt "Base URL > ") || return
-  [ -z "$base_url" ] && { warn "URL 不能为空"; return; }
+  [ -z "$base_url" ] && return
   base_url="${base_url%/}"
 
   api_key=$(gum input --password --placeholder "sk-xxx" --prompt "API Key > ") || return
-  [ -z "$api_key" ] && { warn "API Key 不能为空"; return; }
+  [ -z "$api_key" ] && return
 
   api_type=$(gum input --placeholder "openai-completions" --prompt "API 类型 > ")
   api_type="${api_type:-openai-completions}"
 
-  # 尝试自动获取模型列表
-  local models_json available_models model_count=0
-  gum style --foreground 240 "  正在获取模型列表..."
+  # 自动获取模型
+  local models_json model_count=0
   models_json=$(curl -s -m 10 -H "Authorization: Bearer $api_key" "${base_url}/models" 2>/dev/null || true)
 
+  local models_arr="[]"
   if [ -n "$models_json" ]; then
-    available_models=$(echo "$models_json" | python3 -c '
+    model_count=$(echo "$models_json" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    models = data.get("data", data) if isinstance(data, dict) else data
-    ids = sorted(set(m["id"] for m in models if isinstance(m, dict) and "id" in m))
-    print("\n".join(ids))
-except: pass
-' 2>/dev/null || true)
-    model_count=$(echo "$available_models" | grep -c . 2>/dev/null || echo 0)
-  fi
+    models = data.get('data', data) if isinstance(data, dict) else data
+    ids = sorted(set(m['id'] for m in models if isinstance(m, dict) and 'id' in m))
+    print(len(ids))
+except: print(0)
+" 2>/dev/null || echo 0)
 
-  if [ -n "$available_models" ] && [ "$model_count" -gt 0 ]; then
-    gum style --foreground 46 "  发现 $model_count 个模型"
-    echo ""
-
-    # 用 fzf 选择默认模型
-    local default_model
-    default_model=$(echo "$available_models" | fzf \
-      --prompt="  ❯ " \
-      --header="  选择默认模型  │  ↑↓ 移动  / 搜索  Enter 确认  Esc 跳过" \
-      --header-first \
-      --height=15 --layout=reverse --border=rounded \
-      --border-label=" ◈ DEFAULT MODEL " \
-      --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || default_model=""
-
-    echo ""
-    gum style --border normal --border-foreground 99 --padding "0 2" \
-      "Provider  : $pname" \
-      "Base URL  : $base_url" \
-      "API Key   : ${api_key:0:8}****" \
-      "API 类型  : $api_type" \
-      "模型总数  : $model_count" \
-      "默认模型  : ${default_model:-(未选择)}"
-    echo ""
-
-    gum confirm "确认添加?" || { echo "已取消"; return; }
-    backup
-
-    # 构建 models 数组
-    local models_arr="[]"
-    while IFS= read -r mid; do
-      [ -z "$mid" ] && continue
-      models_arr=$(echo "$models_arr" | jq --arg id "$mid" '. += [{id: $id, name: $id, input: ["text"], contextWindow: 128000, maxTokens: 16384}]')
-    done <<< "$available_models"
-
-    jq --arg p "$pname" --arg url "$base_url" --arg key "$api_key" --arg api "$api_type" --argjson models "$models_arr" \
-      '.models.providers[$p] = {baseUrl: $url, apiKey: $key, api: $api, models: $models}' \
-      "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-
-    # 设置默认模型
-    if [ -n "$default_model" ]; then
-      jq --arg m "${pname}/${default_model}" '.agents.defaults.model.primary = $m' \
-        "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+    if [ "$model_count" -gt 0 ]; then
+      models_arr=$(echo "$models_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+models = data.get('data', data) if isinstance(data, dict) else data
+result = []
+for m in models:
+    if isinstance(m, dict) and 'id' in m:
+        result.append({'id': m['id'], 'name': m.get('id'), 'input': ['text'], 'contextWindow': 128000, 'maxTokens': 4096})
+result.sort(key=lambda x: x['id'])
+print(json.dumps(result))
+" 2>/dev/null || echo "[]")
     fi
-
-    info "Provider '$pname' 已添加，$model_count 个模型"
-  else
-    # 没有获取到模型，手动添加
-    gum style --foreground 214 "  未能自动获取模型列表"
-    echo ""
-
-    gum style --border normal --border-foreground 99 --padding "0 2" \
-      "Provider  : $pname" \
-      "Base URL  : $base_url" \
-      "API Key   : ${api_key:0:8}****" \
-      "API 类型  : $api_type"
-    echo ""
-
-    gum confirm "确认添加?" || { echo "已取消"; return; }
-    backup
-
-    jq --arg p "$pname" --arg url "$base_url" --arg key "$api_key" --arg api "$api_type" \
-      '.models.providers[$p] = {baseUrl: $url, apiKey: $key, api: $api, models: []}' \
-      "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-
-    info "Provider '$pname' 已添加（无模型，稍后手动添加）"
   fi
-}
 
-# ============================================================
-#  编辑 Provider URL
-# ============================================================
-edit_provider_url() {
-  local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+  # fzf 选默认模型
+  local default_sel=""
+  if [ "$model_count" -gt 0 ]; then
+    local model_ids
+    model_ids=$(echo "$models_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+models = data.get('data', data) if isinstance(data, dict) else data
+for m in sorted(set(n['id'] for n in models if isinstance(n, dict) and 'id' in n)):
+    print(m)
+" 2>/dev/null)
 
-  local items=("返回")
-  for p in "${providers[@]}"; do
-    items+=("$(printf '%-15s → %s' "$p" "$(get_base_url "$p")")")
-  done
+    default_sel=$(echo "$model_ids" | fzf \
+      --prompt="  ❯ " \
+      --header="  发现 $model_count 个模型 · 选默认模型  │  Esc 跳过" \
+      --header-first --height=15 --layout=reverse --border=rounded \
+      --border-label=" ◈ DEFAULT MODEL " \
+      --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || true
+  fi
 
-  local choice
-  choice=$(gum choose --cursor "❯ " --header $'选择要编辑的 Provider\n↑↓ 移动 · Enter 确认 · q 退出' "${items[@]}") || return
-  [[ "$choice" == "返回" ]] && return
+  echo ""
+  gum style --border normal --border-foreground 99 --padding "0 2" \
+    "Provider : $pname" \
+    "URL      : $base_url" \
+    "Key      : ${api_key:0:8}****" \
+    "API      : $api_type" \
+    "模型     : $model_count" \
+    "默认     : ${default_sel:-(未选)}"
+  echo ""
 
-  local pname
-  pname=$(echo "$choice" | awk '{print $1}')
-  local old_url
-  old_url=$(get_base_url "$pname")
-
-  local new_url
-  new_url=$(gum input --value "$old_url" --placeholder "新 URL" --prompt "Base URL > ") || return
-  [ -z "$new_url" ] && return
-  new_url="${new_url%/}"
-
-  backup
-  jq --arg p "$pname" --arg url "$new_url" '.models.providers[$p].baseUrl = $url' \
-    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "URL 已更新: $pname"
-}
-
-# ============================================================
-#  编辑 API Key
-# ============================================================
-edit_provider_key() {
-  local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
-
-  local items=("返回")
-  for p in "${providers[@]}"; do
-    items+=("$(printf '%-15s Key: %s' "$p" "$(get_api_key_mask "$p")")")
-  done
-
-  local choice
-  choice=$(gum choose --cursor "❯ " --header $'选择要编辑的 Provider\n↑↓ 移动 · Enter 确认 · q 退出' "${items[@]}") || return
-  [[ "$choice" == "返回" ]] && return
-
-  local pname
-  pname=$(echo "$choice" | awk '{print $1}')
-
-  local new_key
-  new_key=$(gum input --password --placeholder "新 API Key" --prompt "API Key > ") || return
-  [ -z "$new_key" ] && return
+  gum confirm "确认添加?" || { echo "已取消"; return; }
 
   backup
-  jq --arg p "$pname" --arg key "$new_key" '.models.providers[$p].apiKey = $key' \
+  jq --arg p "$pname" --arg url "$base_url" --arg key "$api_key" --arg api "$api_type" --argjson models "$models_arr" \
+    '.models.providers[$p] = {baseUrl: $url, apiKey: $key, api: $api, models: $models}' \
     "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "API Key 已更新: $pname"
+
+  if [ -n "$default_sel" ]; then
+    jq --arg m "${pname}/${default_sel}" '.agents.defaults.model.primary = $m' \
+      "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+  fi
+
+  info "Provider '$pname' 已添加 ($model_count 个模型)"
 }
 
 # ============================================================
@@ -254,338 +309,239 @@ edit_provider_key() {
 # ============================================================
 delete_provider() {
   local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
+  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
   [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
 
   local items=("返回")
   for p in "${providers[@]}"; do
-    local mc
-    mc=$(list_models "$p" | wc -l | tr -d ' ')
-    items+=("$(printf '%-15s %s 个模型' "$p" "$mc")")
+    items+=("$(printf '%-15s %s 个模型' "$p" "$(model_count "$p")")")
   done
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header $'选择要删除的 Provider\n↑↓ 移动 · Enter 确认 · q 退出' "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择要删除的 Provider\n↑↓ · Enter 确认 · q 退出" "${items[@]}") || return
   [[ "$choice" == "返回" ]] && return
 
-  local pname
-  pname=$(echo "$choice" | awk '{print $1}')
-
-  gum confirm "⚠ 确认删除 Provider '$pname' 及其所有模型?" || return
+  local pname; pname=$(echo "$choice" | awk '{print $1}')
+  gum confirm "⚠ 删除 '$pname' 及所有模型?" || return
 
   backup
   jq "del(.models.providers.\"$pname\")" "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "Provider '$pname' 已删除"
+  info "已删除: $pname"
 }
 
 # ============================================================
-#  添加模型
+#  编辑 Provider
 # ============================================================
-add_model() {
+edit_provider() {
   local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
+  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
   [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
 
   local items=("返回")
-  items+=("${providers[@]}")
+  for p in "${providers[@]}"; do
+    items+=("$(printf '%-15s %s' "$p" "$(provider_url "$p")")")
+  done
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header $'选择 Provider\n↑↓ 移动 · Enter 确认 · q 退出' "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择 Provider\n↑↓ · Enter · q 退出" "${items[@]}") || return
   [[ "$choice" == "返回" ]] && return
 
-  local provider="$choice"
-  local model_id
-  model_id=$(gum input --placeholder "模型 ID (如 gpt-4o)" --prompt "Model ID > ") || return
-  [ -z "$model_id" ] && return
+  local pname; pname=$(echo "$choice" | awk '{print $1}')
 
-  local model_name
-  model_name=$(gum input --placeholder "$model_id" --prompt "显示名称 > ")
-  model_name="${model_name:-$model_id}"
-
-  backup
-  jq --arg p "$provider" --arg id "$model_id" --arg name "$model_name" \
-    '.models.providers[$p].models += [{id: $id, name: $name, input: ["text"], contextWindow: 128000, maxTokens: 16384}]' \
-    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "模型 '$model_id' 已添加到 '$provider'"
-}
-
-# ============================================================
-#  删除模型
-# ============================================================
-delete_model() {
-  local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
-
-  local items=("返回")
-  items+=("${providers[@]}")
-
-  local choice
-  choice=$(gum choose --cursor "❯ " --header $'选择 Provider\n↑↓ 移动 · Enter 确认 · q 退出' "${items[@]}") || return
-  [[ "$choice" == "返回" ]] && return
-
-  local provider="$choice"
-  local models=()
-  while IFS= read -r m; do [ -n "$m" ] && models+=("$m"); done < <(list_models "$provider")
-  [ ${#models[@]} -eq 0 ] && { warn "该 Provider 下没有模型"; return; }
-
-  local mitems=("返回")
-  mitems+=("${models[@]}")
-
-  local mid
-  mid=$(gum choose --cursor "❯ " --header $'选择要删除的模型\n↑↓ 移动 · Enter 确认 · q 退出' "${mitems[@]}") || return
-  [[ "$mid" == "返回" ]] && return
-
-  backup
-  jq --arg p "$provider" --arg id "$mid" \
-    '.models.providers[$p].models = [.models.providers[$p].models[] | select(.id != $id)]' \
-    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "模型 '$mid' 已删除"
-}
-
-# ============================================================
-#  快速切换模型（fzf 搜索选择）
-# ============================================================
-quick_switch() {
-  local all_models=()
-  local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
-
-  for p in "${providers[@]}"; do
-    while IFS= read -r m; do
-      [ -n "$m" ] && all_models+=("${p}/${m}")
-    done < <(list_models "$p")
-  done
-
-  [ ${#all_models[@]} -eq 0 ] && { warn "没有可用模型"; return; }
-
-  local current
-  current=$(get_default_model)
-
-  # 写入临时文件用于 fzf
-  local tmpfile
-  tmpfile=$(mktemp)
-  for m in "${all_models[@]}"; do
-    if [ "$m" = "$current" ]; then
-      echo "$m  ← 当前默认" >> "$tmpfile"
-    else
-      echo "$m" >> "$tmpfile"
-    fi
-  done
-
-  local selected
-  selected=$(fzf \
-    --prompt="  ❯ " \
-    --header="  当前: $current  │  ↑↓ 移动  / 搜索  Enter 确认  Esc 取消" \
-    --header-first \
-    --height=20 --layout=reverse --border=rounded \
-    --border-label=" ◈ 切换默认模型 " \
-    --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208 \
-    < "$tmpfile") || { rm -f "$tmpfile"; return; }
-  rm -f "$tmpfile"
-
-  [ -z "$selected" ] && return
-  selected=$(echo "$selected" | sed 's/  ← 当前默认//')
-
-  backup
-  jq --arg m "$selected" '.agents.defaults.model.primary = $m' \
-    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "默认模型已切换为: $selected"
-
-  gum confirm "重启 Gateway 生效?" && {
-    gum spin --spinner minidot --title "正在重启..." -- openclaw gateway restart 2>/dev/null && info "Gateway 已重启" || warn "重启失败"
-  }
-}
-
-# ============================================================
-#  设置默认模型（分类选择）
-# ============================================================
-set_default() {
-  local all_models=()
-  local providers=()
-  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
-
-  for p in "${providers[@]}"; do
-    while IFS= read -r m; do
-      [ -n "$m" ] && all_models+=("${p}/${m}")
-    done < <(list_models "$p")
-  done
-
-  [ ${#all_models[@]} -eq 0 ] && { warn "没有可用模型"; return; }
-
-  local current
-  current=$(get_default_model)
-
-  # 分类
-  local free_models=() top_models=() other_models=()
-  for m in "${all_models[@]}"; do
-    if [[ "$m" == *":free"* ]]; then
-      free_models+=("$m")
-    elif [[ "$m" =~ (opus|gpt-5[^a-z]|gemini.*pro|grok-4[^a-z]|deepseek-r1[^a-z]|o3[^a-z]|o4[^a-z]|claude-sonnet-4[^a-z]|qwen3-max) ]] && [[ "$m" != *":free"* ]]; then
-      top_models+=("$m")
-    else
-      other_models+=("$m")
-    fi
-  done
-
-  # 构建选择列表
-  local items=("返回")
-  if [ ${#free_models[@]} -gt 0 ]; then
-    items+=("── 免费模型 ──")
-    for m in "${free_models[@]}"; do items+=("$m"); done
-  fi
-  if [ ${#top_models[@]} -gt 0 ]; then
-    items+=("── 高端模型 ──")
-    for m in "${top_models[@]}"; do items+=("$m"); done
-  fi
-  items+=("── 全部模型 ──")
-  for m in "${other_models[@]}"; do items+=("$m"); done
-
-  local selected
-  selected=$(gum choose --cursor "❯ " --header "当前默认: $current\n↑↓ 移动 · / 搜索 · Enter 确认 · q 退出" --height 25 "${items[@]}") || return
-  [[ "$selected" == "返回" ]] && return
-  [[ "$selected" == "──"* ]] && return
-
-  backup
-  jq --arg m "$selected" '.agents.defaults.model.primary = $m' \
-    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  info "默认模型已设为: $selected"
-}
-
-# ============================================================
-#  设置 Fallback 模型
-# ============================================================
-set_fallback() {
   local action
-  action=$(gum choose --cursor "❯ " --header $'Fallback 模型管理\n↑↓ 移动 · Enter 确认 · q 退出' \
-    "查看当前 Fallback" \
-    "添加 Fallback" \
-    "移除 Fallback" \
-    "清空全部 Fallback" \
-    "返回") || return
+  action=$(gum choose --cursor "❯ " --header "编辑 $pname\n↑↓ · Enter · q 退出" \
+    "修改 URL" "修改 API Key" "返回") || return
 
   case "$action" in
-    "查看当前 Fallback")
-      echo ""
-      gum style --bold "当前 Fallback 模型:"
-      local has=false
-      while IFS= read -r fb; do
-        [ -z "$fb" ] && continue
-        has=true
-        echo "  → $fb"
-      done < <(get_fallbacks)
-      $has || echo "  (空)"
-      echo ""
-      gum input --placeholder "按回车返回" > /dev/null
-      ;;
-    "添加 Fallback")
-      local all_models=()
-      local providers=()
-      while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(list_providers)
-      for p in "${providers[@]}"; do
-        while IFS= read -r m; do [ -n "$m" ] && all_models+=("${p}/${m}"); done < <(list_models "$p")
-      done
-      [ ${#all_models[@]} -eq 0 ] && { warn "没有可用模型"; return; }
-
-      local mid
-      mid=$(printf '%s\n' "${all_models[@]}" | fzf \
-        --prompt="  ❯ " \
-        --header="  选择 Fallback 模型  │  ↑↓ / 搜索  Enter 确认  Esc 取消" \
-        --header-first --height=15 --layout=reverse --border=rounded \
-        --border-label=" ◈ ADD FALLBACK " \
-        --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || return
-      [ -z "$mid" ] && return
-
+    "修改 URL")
+      local old new
+      old=$(provider_url "$pname")
+      new=$(gum input --value "$old" --prompt "URL > ") || return
+      [ -z "$new" ] && return
+      new="${new%/}"
       backup
-      jq --arg m "$mid" \
-        '.agents.defaults.model.fallbacks = ((.agents.defaults.model.fallbacks // []) + [$m] | unique)' \
-        "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-      info "已添加 Fallback: $mid"
+      jq --arg p "$pname" --arg url "$new" '.models.providers[$p].baseUrl = $url' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+      info "URL 已更新"
       ;;
-    "移除 Fallback")
-      local fbs=()
-      while IFS= read -r fb; do [ -n "$fb" ] && fbs+=("$fb"); done < <(get_fallbacks)
-      [ ${#fbs[@]} -eq 0 ] && { warn "没有 Fallback"; return; }
-
-      local mitems=("返回")
-      mitems+=("${fbs[@]}")
-      local mid
-      mid=$(gum choose --cursor "❯ " --header "选择要移除的 Fallback" "${mitems[@]}") || return
-      [[ "$mid" == "返回" ]] && return
-
+    "修改 API Key")
+      local new
+      new=$(gum input --password --prompt "API Key > ") || return
+      [ -z "$new" ] && return
       backup
-      jq --arg m "$mid" \
-        '.agents.defaults.model.fallbacks = [(.agents.defaults.model.fallbacks // [])[] | select(. != $m)]' \
-        "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-      info "已移除 Fallback: $mid"
-      ;;
-    "清空全部 Fallback")
-      gum confirm "确认清空所有 Fallback?" || return
-      backup
-      jq '.agents.defaults.model.fallbacks = []' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-      info "已清空 Fallback"
+      jq --arg p "$pname" --arg key "$new" '.models.providers[$p].apiKey = $key' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+      info "API Key 已更新"
       ;;
     "返回"|*) return ;;
   esac
 }
 
 # ============================================================
-#  Provider 管理子菜单
+#  模型管理
+# ============================================================
+manage_models() {
+  while true; do
+    clear
+    gum style --bold --foreground 51 "━━ 模型管理 ━━"
+    echo ""
+    show_status
+    echo ""
+
+    local action
+    action=$(gum choose --cursor "❯ " --header "↑↓ · Enter · q 返回" \
+      "快速切换 (fzf)" \
+      "添加模型" \
+      "删除模型" \
+      "管理 Fallback" \
+      "返回主菜单") || return
+
+    case "$action" in
+      "快速切换 (fzf)")  cmd_switch; prompt_continue ;;
+      "添加模型")        _add_model; prompt_continue ;;
+      "删除模型")        _delete_model; prompt_continue ;;
+      "管理 Fallback")   _manage_fallback ;;
+      "返回主菜单"|*)    return ;;
+    esac
+  done
+}
+
+_add_model() {
+  local providers=()
+  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
+  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+
+  local items=("返回")
+  items+=("${providers[@]}")
+  local choice
+  choice=$(gum choose --cursor "❯ " --header "选择 Provider" "${items[@]}") || return
+  [[ "$choice" == "返回" ]] && return
+
+  local mid mname
+  mid=$(gum input --placeholder "模型 ID" --prompt "Model ID > ") || return
+  [ -z "$mid" ] && return
+  mname=$(gum input --placeholder "$mid" --prompt "名称 > ")
+  mname="${mname:-$mid}"
+
+  backup
+  jq --arg p "$choice" --arg id "$mid" --arg name "$mname" \
+    '.models.providers[$p].models += [{id: $id, name: $name, input: ["text"], contextWindow: 128000, maxTokens: 4096}]' \
+    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+  info "已添加: $mid → $choice"
+}
+
+_delete_model() {
+  local providers=()
+  while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
+  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+
+  local items=("返回")
+  items+=("${providers[@]}")
+  local prov
+  prov=$(gum choose --cursor "❯ " --header "选择 Provider" "${items[@]}") || return
+  [[ "$prov" == "返回" ]] && return
+
+  local models=()
+  while IFS= read -r m; do [ -n "$m" ] && models+=("$m"); done < <(provider_models "$prov")
+  [ ${#models[@]} -eq 0 ] && { warn "无模型"; return; }
+
+  local mitems=("返回")
+  mitems+=("${models[@]}")
+  local mid
+  mid=$(gum choose --cursor "❯ " --header "选择要删除的模型" "${mitems[@]}") || return
+  [[ "$mid" == "返回" ]] && return
+
+  backup
+  jq --arg p "$prov" --arg id "$mid" \
+    '.models.providers[$p].models = [.models.providers[$p].models[] | select(.id != $id)]' \
+    "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+  info "已删除: $mid"
+}
+
+_manage_fallback() {
+  local action
+  action=$(gum choose --cursor "❯ " --header "Fallback 管理\n↑↓ · Enter · q 返回" \
+    "查看" "添加" "移除" "清空" "返回") || return
+
+  case "$action" in
+    "查看")
+      echo ""
+      local has=false
+      while IFS= read -r fb; do [ -z "$fb" ] && continue; has=true; echo "  → $fb"; done < <(fallback_list)
+      $has || echo "  (空)"
+      prompt_continue
+      ;;
+    "添加")
+      local all_models
+      all_models=$(list_all_models)
+      [ -z "$all_models" ] && { warn "无模型"; return; }
+      local sel
+      sel=$(echo "$all_models" | fzf --prompt="  ❯ " --header="选 Fallback · Esc 取消" \
+        --height=15 --layout=reverse --border=rounded --border-label=" ADD FALLBACK " \
+        --color=border:51,label:51,prompt:201,pointer:46,marker:208) || return
+      sel=$(echo "$sel" | sed 's/  \* DEFAULT//')
+      backup
+      jq --arg m "$sel" '.agents.defaults.model.fallbacks = ((.agents.defaults.model.fallbacks // []) + [$m] | unique)' \
+        "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+      info "已添加: $sel"
+      prompt_continue
+      ;;
+    "移除")
+      local fbs=()
+      while IFS= read -r fb; do [ -n "$fb" ] && fbs+=("$fb"); done < <(fallback_list)
+      [ ${#fbs[@]} -eq 0 ] && { warn "无 Fallback"; return; }
+      local mitems=("返回")
+      mitems+=("${fbs[@]}")
+      local sel
+      sel=$(gum choose --cursor "❯ " --header "选择要移除的 Fallback" "${mitems[@]}") || return
+      [[ "$sel" == "返回" ]] && return
+      backup
+      jq --arg m "$sel" '.agents.defaults.model.fallbacks = [(.agents.defaults.model.fallbacks // [])[] | select(. != $m)]' \
+        "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+      info "已移除: $sel"
+      prompt_continue
+      ;;
+    "清空")
+      gum confirm "清空所有 Fallback?" || return
+      backup
+      jq '.agents.defaults.model.fallbacks = []' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
+      info "已清空"
+      prompt_continue
+      ;;
+    "返回"|*) return ;;
+  esac
+}
+
+# ============================================================
+#  API 供应商菜单
 # ============================================================
 provider_menu() {
   while true; do
     clear
     gum style --bold --foreground 51 "━━ API 供应商管理 ━━"
     echo ""
-    show_provider_list
 
-    local action
-    action=$(gum choose --cursor "❯ " --header $'选择操作\n↑↓ 移动 · Enter 确认 · q/ESC 返回' \
-      "添加 API 供应商" \
-      "编辑 URL" \
-      "编辑 API Key" \
-      "删除 API 供应商" \
-      "返回主菜单") || return
-
-    case "$action" in
-      "添加 API 供应商")    add_provider; gum input --placeholder "按回车继续" > /dev/null ;;
-      "编辑 URL")           edit_provider_url; gum input --placeholder "按回车继续" > /dev/null ;;
-      "编辑 API Key")       edit_provider_key; gum input --placeholder "按回车继续" > /dev/null ;;
-      "删除 API 供应商")    delete_provider; gum input --placeholder "按回车继续" > /dev/null ;;
-      "返回主菜单"|*)       return ;;
-    esac
-  done
-}
-
-# ============================================================
-#  模型管理子菜单
-# ============================================================
-model_menu() {
-  while true; do
-    clear
-    gum style --bold --foreground 51 "━━ 模型管理 ━━"
-    echo ""
-    echo -e "  默认模型: ${C}$(get_default_model)${NC}"
-    local fc; fc=$(get_fallbacks | wc -l | tr -d ' ')
-    [ "$fc" -gt 0 ] && echo -e "  Fallback: ${Y}${fc}${NC} 个"
+    # 快速总览
+    local providers=()
+    while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
+    for p in "${providers[@]}"; do
+      printf "  ${YELLOW}%-15s${NC} ${CYAN}%-35s${NC} %s 个模型\n" "$p" "$(provider_url "$p")" "$(model_count "$p")"
+    done
+    [ ${#providers[@]} -eq 0 ] && echo -e "  ${GRAY}(无 Provider)${NC}"
     echo ""
 
     local action
-    action=$(gum choose --cursor "❯ " --header $'选择操作\n↑↓ 移动 · Enter 确认 · q/ESC 返回' \
-      "快速切换默认模型 (fzf)" \
-      "选择默认模型 (分类)" \
-      "管理 Fallback 模型" \
-      "添加模型" \
-      "删除模型" \
+    action=$(gum choose --cursor "❯ " --header "↑↓ · Enter · q 返回" \
+      "添加 Provider" \
+      "编辑 Provider" \
+      "删除 Provider" \
+      "同步云端模型" \
       "返回主菜单") || return
 
     case "$action" in
-      "快速切换默认模型 (fzf)") quick_switch; gum input --placeholder "按回车继续" > /dev/null ;;
-      "选择默认模型 (分类)")    set_default; gum input --placeholder "按回车继续" > /dev/null ;;
-      "管理 Fallback 模型")     set_fallback ;;
-      "添加模型")               add_model; gum input --placeholder "按回车继续" > /dev/null ;;
-      "删除模型")               delete_model; gum input --placeholder "按回车继续" > /dev/null ;;
-      "返回主菜单"|*)           return ;;
+      "添加 Provider")    add_provider; prompt_continue ;;
+      "编辑 Provider")    edit_provider; prompt_continue ;;
+      "删除 Provider")    delete_provider; prompt_continue ;;
+      "同步云端模型")      cmd_sync; prompt_continue ;;
+      "返回主菜单"|*)     return ;;
     esac
   done
 }
@@ -596,43 +552,53 @@ model_menu() {
 main_menu() {
   while true; do
     clear
-    local default_model
-    default_model=$(get_default_model)
+    local dm pc mc
+    dm=$(default_model)
+    pc=$(providers_list | grep -c . 2>/dev/null || echo 0)
+    mc=$(list_all_models | grep -c . 2>/dev/null || echo 0)
 
     echo ""
-    gum style --bold --foreground 51 --border double --border-foreground 51 --padding "0 2" \
-      "OpenClaw Model Manager (ocm)"
+    gum style --bold --foreground 51 --border double --border-foreground 51 --padding "0 3" \
+      "OpenClaw Model Manager v$VERSION"
     echo ""
-    gum style --foreground 240 "  默认模型: ${default_model}"
-    echo ""
+
+    # 状态卡片
+    gum style --border rounded --border-foreground 240 --padding "0 2" \
+      "默认模型  : $dm" \
+      "供应商    : $pc" \
+      "模型总数  : $mc"
 
     local action
-    action=$(gum choose --cursor "❯ " --header $'↑↓ 移动 · Enter 确认 · q/ESC 退出' \
-      "API 供应商管理" \
-      "模型管理" \
-      "快速切换模型" \
-      "查看总览" \
-      "重启 Gateway" \
-      "Gateway 状态" \
-      "还原配置备份" \
-      "退出") || exit 0
+    action=$(gum choose --cursor "❯ " --header "↑↓ · Enter · q 退出" \
+      "🎯  快速切换模型" \
+      "📡  API 供应商管理" \
+      "📦  模型管理" \
+      "🔄  同步云端模型" \
+      "🔃  重启 Gateway" \
+      "📊  查看状态" \
+      "⏪  还原备份" \
+      "🚪  退出") || exit 0
 
     case "$action" in
-      "API 供应商管理")   provider_menu ;;
-      "模型管理")          model_menu ;;
-      "快速切换模型")      quick_switch; gum input --placeholder "按回车继续" > /dev/null ;;
-      "查看总览")          show_provider_list; gum input --placeholder "按回车继续" > /dev/null ;;
-      "重启 Gateway")      gum spin --spinner minidot --title "正在重启..." -- openclaw gateway restart 2>/dev/null && info "Gateway 已重启" || warn "重启失败"; gum input --placeholder "按回车继续" > /dev/null ;;
-      "Gateway 状态")      openclaw gateway status 2>/dev/null || openclaw status 2>/dev/null || warn "状态查询失败"; echo ""; gum input --placeholder "按回车继续" > /dev/null ;;
-      "还原配置备份")
+      *"快速切换"*)   cmd_switch; prompt_continue ;;
+      *"供应商管理"*) provider_menu ;;
+      *"模型管理"*)   manage_models ;;
+      *"同步云端"*)   cmd_sync; prompt_continue ;;
+      *"重启"*)
+        gum spin --spinner minidot --title "重启中..." -- openclaw gateway restart 2>/dev/null && info "Gateway 已重启" || fail "重启失败"
+        prompt_continue ;;
+      *"查看状态"*)
+        echo ""
+        openclaw gateway status 2>/dev/null || openclaw status 2>/dev/null || warn "状态查询失败"
+        prompt_continue ;;
+      *"还原备份"*)
         if [ -f "$BACKUP" ]; then
-          gum confirm "从备份还原配置?" && { cp "$BACKUP" "$CONFIG"; info "已还原"; }
+          gum confirm "从备份还原?" && { cp "$BACKUP" "$CONFIG"; info "已还原"; }
         else
-          warn "没有备份文件"
+          warn "无备份"
         fi
-        gum input --placeholder "按回车继续" > /dev/null
-        ;;
-      "退出"|*) exit 0 ;;
+        prompt_continue ;;
+      *"退出"|*) exit 0 ;;
     esac
   done
 }
@@ -640,31 +606,26 @@ main_menu() {
 # ============================================================
 #  入口
 # ============================================================
-need_jq
-need_gum
-need_fzf
+[ -f "$CONFIG" ] || { fail "配置不存在: $CONFIG"; exit 1; }
 
-[ -f "$CONFIG" ] || { err "配置文件不存在: $CONFIG"; exit 1; }
-
-# 快捷命令模式
 case "${1:-}" in
-  ls|list)    show_provider_list; exit ;;
-  switch)     quick_switch; exit ;;
-  status)     openclaw gateway status 2>/dev/null || openclaw status; exit ;;
-  restart)    openclaw gateway restart; exit ;;
-  help|--help|-h)
-    gum style --bold "ocm — OpenClaw Model Manager"
+  ls|list)      list_all_models; exit ;;
+  switch|sw)    cmd_switch; exit ;;
+  sync)         cmd_sync; exit ;;
+  status|st)    openclaw gateway status 2>/dev/null || openclaw status; exit ;;
+  restart|rs)   openclaw gateway restart; exit ;;
+  help|-h|--help)
+    gum style --bold "ocm v$VERSION — OpenClaw Model Manager"
     echo ""
-    echo "  ocm              交互式菜单 (方向键选择)"
-    echo "  ocm ls           列出所有 Provider 和模型"
-    echo "  ocm switch       快速切换默认模型 (fzf)"
-    echo "  ocm status       查看 Gateway 状态"
+    echo "  ocm              交互式菜单"
+    echo "  ocm ls           列出所有模型"
+    echo "  ocm switch       快速切换 (fzf)"
+    echo "  ocm sync         同步云端模型"
+    echo "  ocm status       Gateway 状态"
     echo "  ocm restart      重启 Gateway"
-    echo "  ocm help         显示帮助"
-    exit 0
-    ;;
+    exit 0 ;;
   "") ;;
-  *) err "未知命令: $1 (运行 ocm help)"; exit 1 ;;
+  *) fail "未知: $1 (ocm help)"; exit 1 ;;
 esac
 
 main_menu
