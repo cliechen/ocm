@@ -52,7 +52,7 @@ mkdir -p "$INSTALL_DIR"
 
 echo -e "${YELLOW}安装 ocm 到 ${INSTALL_DIR}/ocm ...${NC}"
 
-curl -sL "https://raw.githubusercontent.com/${GITHUB_USER:-byJoey}/ocm/main/ocm.sh" -o "${INSTALL_DIR}/ocm"
+curl -sL "https://raw.githubusercontent.com/cliechen/ocm/main/ocm.sh" -o "${INSTALL_DIR}/ocm"
 chmod +x "${INSTALL_DIR}/ocm"
 
 # 确保 ~/.local/bin 在 PATH 中
