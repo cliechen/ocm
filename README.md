@@ -20,14 +20,14 @@
 ### 一键安装
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/byJoey/ocm/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/cliechen/ocm/main/install.sh)
 ```
 
 ### 手动安装
 
 ```bash
 # 下载
-curl -sL https://raw.githubusercontent.com/byJoey/ocm/main/ocm.sh -o ~/.local/bin/ocm
+curl -sL https://raw.githubusercontent.com/cliechen/ocm/main/ocm.sh -o ~/.local/bin/ocm
 chmod +x ~/.local/bin/ocm
 
 # 确保 ~/.local/bin 在 PATH 中
