@@ -203,7 +203,7 @@ print(json.dumps(result))
 }
 
 # ============================================================
-#  添加 Provider
+#  添加供应商
 # ============================================================
 add_provider() {
   echo ""
@@ -211,7 +211,7 @@ add_provider() {
   echo ""
 
   local pname base_url api_key api_type
-  pname=$(gum input --placeholder "供应商名称 (如: openai)" --prompt "Provider > ") || return
+  pname=$(gum input --placeholder "供应商名称 (如: openai)" --prompt "供应商 > ") || return
   [ -z "$pname" ] && { warn "名称不能为空"; return; }
 
   if jq -e ".models.providers.\"$pname\"" "$CONFIG" &>/dev/null; then
@@ -222,7 +222,7 @@ add_provider() {
   [ -z "$base_url" ] && return
   base_url="${base_url%/}"
 
-  api_key=$(gum input --password --placeholder "sk-xxx" --prompt "API Key > ") || return
+  api_key=$(gum input --password --placeholder "sk-xxx" --prompt "密钥 > ") || return
   [ -z "$api_key" ] && return
 
   api_type=$(gum input --placeholder "openai-completions" --prompt "API 类型 > ")
@@ -281,7 +281,7 @@ for m in sorted(set(n['id'] for n in models if isinstance(n, dict) and 'id' in n
 
   echo ""
   gum style --border normal --border-foreground 99 --padding "0 2" \
-    "Provider : $pname" \
+    "供应商 : $pname" \
     "URL      : $base_url" \
     "Key      : ${api_key:0:8}****" \
     "API      : $api_type" \
@@ -305,7 +305,7 @@ for m in sorted(set(n['id'] for n in models if isinstance(n, dict) and 'id' in n
 }
 
 # ============================================================
-#  删除 Provider
+#  删除供应商
 # ============================================================
 delete_provider() {
   local providers=()
@@ -330,7 +330,7 @@ delete_provider() {
 }
 
 # ============================================================
-#  编辑 Provider
+#  编辑供应商
 # ============================================================
 edit_provider() {
   local providers=()
@@ -365,7 +365,7 @@ edit_provider() {
       ;;
     "修改密钥")
       local new
-      new=$(gum input --password --prompt "API Key > ") || return
+      new=$(gum input --password --prompt "密钥 > ") || return
       [ -z "$new" ] && return
       backup
       jq --arg p "$pname" --arg key "$new" '.models.providers[$p].apiKey = $key' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
@@ -525,7 +525,7 @@ provider_menu() {
     for p in "${providers[@]}"; do
       printf "  ${YELLOW}%-15s${NC} ${CYAN}%-35s${NC} %s 个模型\n" "$p" "$(provider_url "$p")" "$(model_count "$p")"
     done
-    [ ${#providers[@]} -eq 0 ] && echo -e "  ${GRAY}(无 Provider)${NC}"
+    [ ${#providers[@]} -eq 0 ] && echo -e "  ${GRAY}(无供应商)${NC}"
     echo ""
 
     local action
@@ -621,8 +621,8 @@ case "${1:-}" in
     echo "  ocm ls           列出所有模型"
     echo "  ocm switch       快速切换 (fzf)"
     echo "  ocm sync         同步云端模型"
-    echo "  ocm status       Gateway 状态"
-    echo "  ocm restart      重启 Gateway"
+    echo "  ocm status       网关状态"
+    echo "  ocm restart      重启网关"
     exit 0 ;;
   "") ;;
   *) fail "未知: $1 (ocm help)"; exit 1 ;;
