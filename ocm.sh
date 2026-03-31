@@ -61,14 +61,14 @@ try:
                 ms.add(pn + '/' + m['id'])
     for mid in (a.get('models') or {}): ms.add(mid)
     for m in sorted(ms):
-        tag = '  * DEFAULT' if m == pr else ''
+        tag = '  * 已设为默认' if m == pr else ''
         print(m + tag)
 except: pass
 " 2>/dev/null
 }
 
 get_current_model() {
-  list_all_models | grep "DEFAULT" | sed 's/  \* DEFAULT//' | head -1
+  list_all_models | grep "已设为默认" | sed 's/  \* 已设为默认//' | head -1
 }
 
 # ---------- 状态摘要 ----------
@@ -90,26 +90,26 @@ cmd_switch() {
   [ -z "$all_models" ] && { fail "没有可用模型"; return 1; }
 
   local current
-  current=$(echo "$all_models" | grep "DEFAULT" | sed 's/  \* DEFAULT//' | head -1)
+  current=$(echo "$all_models" | grep "已设为默认" | sed 's/  \* 已设为默认//' | head -1)
 
   local selected
   selected=$(echo "$all_models" | fzf \
     --prompt="  ❯ " \
-    --header="  当前: $current  │  ↑↓/搜索  Enter 确认  Esc 取消" \
+    --header="  当前: $current  │  ↑↓ 搜索 · Enter 确认 · Esc 取消" \
     --header-first \
     --height=20 --layout=reverse --border=rounded \
     --border-label=" ◈ 切换默认模型 " \
     --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || return
 
   [ -z "$selected" ] && return
-  selected=$(echo "$selected" | sed 's/  \* DEFAULT//' | awk '{print $1}')
+  selected=$(echo "$selected" | sed 's/  \* 已设为默认//' | awk '{print $1}')
 
   jq --arg m "$selected" '.agents.defaults.model.primary = $m' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
   info "已切换为: $selected"
 
-  gum confirm "重启 Gateway 生效?" && {
-    gum spin --spinner minidot --title "重启中..." -- openclaw gateway restart 2>/dev/null
-    info "Gateway 已重启"
+  gum confirm "重启网关生效?" && {
+    gum spin --spinner minidot --title "正在重启..." -- openclaw gateway restart 2>/dev/null
+    info "网关已重启"
   }
 }
 
@@ -119,7 +119,7 @@ cmd_switch() {
 cmd_sync() {
   local providers=()
   while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+  [ ${#providers[@]} -eq 0 ] && { warn "没有供应商"; return; }
 
   echo ""
   gum style --bold --foreground 51 "━━ 同步云端模型 ━━"
@@ -129,7 +129,7 @@ cmd_sync() {
   items+=("${providers[@]}")
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择要同步的 Provider\n↑↓ 移动 · Enter 确认 · q 退出" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择要同步的供应商\n↑↓ 移动 · Enter 确认 · q 退出" "${items[@]}") || return
   [[ "$choice" == "返回" ]] && return
 
   if [[ "$choice" == "同步全部" ]]; then
@@ -207,18 +207,18 @@ print(json.dumps(result))
 # ============================================================
 add_provider() {
   echo ""
-  gum style --bold --foreground 51 "━━ 添加 API 供应商 ━━"
+  gum style --bold --foreground 51 "━━ 添加供应商 ━━"
   echo ""
 
   local pname base_url api_key api_type
-  pname=$(gum input --placeholder "Provider 名称 (如: openai)" --prompt "Provider > ") || return
+  pname=$(gum input --placeholder "供应商名称 (如: openai)" --prompt "Provider > ") || return
   [ -z "$pname" ] && { warn "名称不能为空"; return; }
 
   if jq -e ".models.providers.\"$pname\"" "$CONFIG" &>/dev/null; then
-    gum confirm "Provider '$pname' 已存在，覆盖?" || return
+    gum confirm "供应商 '$pname' 已存在，覆盖?" || return
   fi
 
-  base_url=$(gum input --placeholder "https://api.xxx.com/v1" --prompt "Base URL > ") || return
+  base_url=$(gum input --placeholder "https://api.xxx.com/v1" --prompt "地址 > ") || return
   [ -z "$base_url" ] && return
   base_url="${base_url%/}"
 
@@ -273,9 +273,9 @@ for m in sorted(set(n['id'] for n in models if isinstance(n, dict) and 'id' in n
 
     default_sel=$(echo "$model_ids" | fzf \
       --prompt="  ❯ " \
-      --header="  发现 $model_count 个模型 · 选默认模型  │  Esc 跳过" \
+      --header="  发现 $model_count 个模型 · 选择默认模型 · Esc 跳过" \
       --header-first --height=15 --layout=reverse --border=rounded \
-      --border-label=" ◈ DEFAULT MODEL " \
+      --border-label=" ◈ 已设为默认 MODEL " \
       --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || true
   fi
 
@@ -301,7 +301,7 @@ for m in sorted(set(n['id'] for n in models if isinstance(n, dict) and 'id' in n
       "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
   fi
 
-  info "Provider '$pname' 已添加 ($model_count 个模型)"
+  info "供应商 '$pname' 已添加 ($model_count 个模型)"
 }
 
 # ============================================================
@@ -310,7 +310,7 @@ for m in sorted(set(n['id'] for n in models if isinstance(n, dict) and 'id' in n
 delete_provider() {
   local providers=()
   while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+  [ ${#providers[@]} -eq 0 ] && { warn "没有供应商"; return; }
 
   local items=("返回")
   for p in "${providers[@]}"; do
@@ -318,7 +318,7 @@ delete_provider() {
   done
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择要删除的 Provider\n↑↓ · Enter 确认 · q 退出" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择要删除的供应商\n↑↓ 移动 · Enter 确认 · Esc 返回" "${items[@]}") || return
   [[ "$choice" == "返回" ]] && return
 
   local pname; pname=$(echo "$choice" | awk '{print $1}')
@@ -335,7 +335,7 @@ delete_provider() {
 edit_provider() {
   local providers=()
   while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+  [ ${#providers[@]} -eq 0 ] && { warn "没有供应商"; return; }
 
   local items=("返回")
   for p in "${providers[@]}"; do
@@ -343,17 +343,17 @@ edit_provider() {
   done
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择 Provider\n↑↓ · Enter · q 退出" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择供应商\n↑↓ 移动 · Enter 确认 · Esc 返回" "${items[@]}") || return
   [[ "$choice" == "返回" ]] && return
 
   local pname; pname=$(echo "$choice" | awk '{print $1}')
 
   local action
-  action=$(gum choose --cursor "❯ " --header "编辑 $pname\n↑↓ · Enter · q 退出" \
-    "修改 URL" "修改 API Key" "返回") || return
+  action=$(gum choose --cursor "❯ " --header "编辑 $pname\n↑↓ 移动 · Enter 确认 · Esc 返回" \
+    "修改地址" "修改密钥" "返回") || return
 
   case "$action" in
-    "修改 URL")
+    "修改地址")
       local old new
       old=$(provider_url "$pname")
       new=$(gum input --value "$old" --prompt "URL > ") || return
@@ -361,15 +361,15 @@ edit_provider() {
       new="${new%/}"
       backup
       jq --arg p "$pname" --arg url "$new" '.models.providers[$p].baseUrl = $url' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-      info "URL 已更新"
+      info "地址已更新"
       ;;
-    "修改 API Key")
+    "修改密钥")
       local new
       new=$(gum input --password --prompt "API Key > ") || return
       [ -z "$new" ] && return
       backup
       jq --arg p "$pname" --arg key "$new" '.models.providers[$p].apiKey = $key' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-      info "API Key 已更新"
+      info "密钥已更新"
       ;;
     "返回"|*) return ;;
   esac
@@ -407,16 +407,16 @@ manage_models() {
 _add_model() {
   local providers=()
   while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+  [ ${#providers[@]} -eq 0 ] && { warn "没有供应商"; return; }
 
   local items=("返回")
   items+=("${providers[@]}")
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择 Provider" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}") || return
   [[ "$choice" == "返回" ]] && return
 
   local mid mname
-  mid=$(gum input --placeholder "模型 ID" --prompt "Model ID > ") || return
+  mid=$(gum input --placeholder "模型 ID" --prompt "模型 ID > ") || return
   [ -z "$mid" ] && return
   mname=$(gum input --placeholder "$mid" --prompt "名称 > ")
   mname="${mname:-$mid}"
@@ -431,12 +431,12 @@ _add_model() {
 _delete_model() {
   local providers=()
   while IFS= read -r p; do [ -n "$p" ] && providers+=("$p"); done < <(providers_list)
-  [ ${#providers[@]} -eq 0 ] && { warn "没有 Provider"; return; }
+  [ ${#providers[@]} -eq 0 ] && { warn "没有供应商"; return; }
 
   local items=("返回")
   items+=("${providers[@]}")
   local prov
-  prov=$(gum choose --cursor "❯ " --header "选择 Provider" "${items[@]}") || return
+  prov=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}") || return
   [[ "$prov" == "返回" ]] && return
 
   local models=()
@@ -458,7 +458,7 @@ _delete_model() {
 
 _manage_fallback() {
   local action
-  action=$(gum choose --cursor "❯ " --header "Fallback 管理\n↑↓ · Enter · q 返回" \
+  action=$(gum choose --cursor "❯ " --header "Fallback 管理\n↑↓ 移动 · Enter 确认 · Esc 返回" \
     "查看" "添加" "移除" "清空" "返回") || return
 
   case "$action" in
@@ -474,10 +474,10 @@ _manage_fallback() {
       all_models=$(list_all_models)
       [ -z "$all_models" ] && { warn "无模型"; return; }
       local sel
-      sel=$(echo "$all_models" | fzf --prompt="  ❯ " --header="选 Fallback · Esc 取消" \
-        --height=15 --layout=reverse --border=rounded --border-label=" ADD FALLBACK " \
+      sel=$(echo "$all_models" | fzf --prompt="  ❯ " --header="选择 Fallback · Esc 取消" \
+        --height=15 --layout=reverse --border=rounded --border-label=" 添加 Fallback " \
         --color=border:51,label:51,prompt:201,pointer:46,marker:208) || return
-      sel=$(echo "$sel" | sed 's/  \* DEFAULT//')
+      sel=$(echo "$sel" | sed 's/  \* 已设为默认//')
       backup
       jq --arg m "$sel" '.agents.defaults.model.fallbacks = ((.agents.defaults.model.fallbacks // []) + [$m] | unique)' \
         "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
@@ -516,7 +516,7 @@ _manage_fallback() {
 provider_menu() {
   while true; do
     clear
-    gum style --bold --foreground 51 "━━ API 供应商管理 ━━"
+    gum style --bold --foreground 51 "━━ 供应商管理 ━━"
     echo ""
 
     # 快速总览
@@ -530,16 +530,16 @@ provider_menu() {
 
     local action
     action=$(gum choose --cursor "❯ " --header "↑↓ 移动 · Enter 确认 · ESC 返回上级" \
-      "添加 Provider" \
-      "编辑 Provider" \
-      "删除 Provider" \
+      "添加供应商" \
+      "编辑供应商" \
+      "删除供应商" \
       "同步云端模型" \
       "返回主菜单") || return
 
     case "$action" in
-      "添加 Provider")    add_provider; prompt_continue ;;
-      "编辑 Provider")    edit_provider; prompt_continue ;;
-      "删除 Provider")    delete_provider; prompt_continue ;;
+      "添加供应商")    add_provider; prompt_continue ;;
+      "编辑供应商")    edit_provider; prompt_continue ;;
+      "删除供应商")    delete_provider; prompt_continue ;;
       "同步云端模型")      cmd_sync; prompt_continue ;;
       "返回主菜单"|*)     return ;;
     esac
@@ -571,10 +571,10 @@ main_menu() {
     local action
     action=$(gum choose --cursor "❯ " --header "↑↓ 移动 · Enter 确认 · ESC 刷新" \
       "🎯  快速切换模型" \
-      "📡  API 供应商管理" \
+      "📡  供应商管理" \
       "📦  模型管理" \
       "🔄  同步云端模型" \
-      "🔃  重启 Gateway" \
+      "🔃  重启网关" \
       "📊  查看状态" \
       "⏪  还原备份" \
       "🚪  退出") || continue
@@ -585,7 +585,7 @@ main_menu() {
       *"模型管理"*)   manage_models ;;
       *"同步云端"*)   cmd_sync; prompt_continue ;;
       *"重启"*)
-        gum spin --spinner minidot --title "重启中..." -- openclaw gateway restart 2>/dev/null && info "Gateway 已重启" || fail "重启失败"
+        gum spin --spinner minidot --title "正在重启..." -- openclaw gateway restart 2>/dev/null && info "网关已重启" || fail "重启失败"
         prompt_continue ;;
       *"查看状态"*)
         echo ""
