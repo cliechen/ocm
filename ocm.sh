@@ -387,7 +387,7 @@ manage_models() {
     echo ""
 
     local action
-    action=$(gum choose --cursor "❯ " --header "↑↓ · Enter · q 返回" \
+    action=$(gum choose --cursor "❯ " --header "↑↓ 移动 · Enter 确认 · ESC 返回上级" \
       "快速切换 (fzf)" \
       "添加模型" \
       "删除模型" \
@@ -529,7 +529,7 @@ provider_menu() {
     echo ""
 
     local action
-    action=$(gum choose --cursor "❯ " --header "↑↓ · Enter · q 返回" \
+    action=$(gum choose --cursor "❯ " --header "↑↓ 移动 · Enter 确认 · ESC 返回上级" \
       "添加 Provider" \
       "编辑 Provider" \
       "删除 Provider" \
@@ -569,7 +569,7 @@ main_menu() {
       "模型总数  : $mc"
 
     local action
-    action=$(gum choose --cursor "❯ " --header "↑↓ · Enter · q 退出" \
+    action=$(gum choose --cursor "❯ " --header "↑↓ 移动 · Enter 确认 · ESC 刷新" \
       "🎯  快速切换模型" \
       "📡  API 供应商管理" \
       "📦  模型管理" \
@@ -577,7 +577,7 @@ main_menu() {
       "🔃  重启 Gateway" \
       "📊  查看状态" \
       "⏪  还原备份" \
-      "🚪  退出") || exit 0
+      "🚪  退出") || continue
 
     case "$action" in
       *"快速切换"*)   cmd_switch; prompt_continue ;;
