@@ -81,7 +81,7 @@ try:
                 cost = m.get("cost", {})
                 if isinstance(cost, dict):
                     ci, co = cost.get("input", 0), cost.get("output", 0)
-                    if ci == 0 and co == 0: cap += " ð°免费"
+                    if ci == 0 and co == 0: cap += " 💰免费"
                     elif ci or co: cap += " $%.2f入" % ci
                 ctx = m.get("contextWindow", 0)
                 if isinstance(ctx, (int, float)) and ctx >= 100000:
