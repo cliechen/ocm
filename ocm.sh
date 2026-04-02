@@ -466,15 +466,21 @@ _edit_submenu() {
           --height=15 --layout=reverse --border=rounded --color=border:51,label:51,prompt:201,pointer:46) || continue
         [ -z "$s" ] && continue; test_model_chat "$pn" "$s"; prompt_continue ;;
       "✏️  修改地址")
-        local o n; o=$(provider_url "$pn"); n=$(gum input --value "$o" --prompt "URL > ") || continue
-        [ -z "$n" ] && continue; n="${n%/}"; backup
+        local o n; o=$(provider_url "$pn"); n=$(gum input --value "$o" --prompt "URL > ") || { continue; }
+        if [ -z "$n" ]; then warn "地址不能为空"; prompt_continue; continue; fi
+        n="${n%/}"; backup
         jq --arg p "$pn" --arg u "$n" '.models.providers[$p].baseUrl=$u' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-        info "地址已更新: $n"; echo ""; test_provider "$pn" || true ;;
+        info "地址已更新: $n"
+        echo ""; test_provider "$pn" || true
+        prompt_continue ;;
       "🔑 修改密钥")
-        local n; n=$(gum input --password --prompt "密钥 > ") || continue
-        [ -z "$n" ] && continue; backup
+        local n; n=$(gum input --password --prompt "密钥 > ") || { continue; }
+        if [ -z "$n" ]; then warn "密钥不能为空"; prompt_continue; continue; fi
+        backup
         jq --arg p "$pn" --arg k "$n" '.models.providers[$p].apiKey=$k' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-        info "密钥已更新"; echo ""; test_provider "$pn" || true ;;
+        info "密钥已更新"
+        echo ""; test_provider "$pn" || true
+        prompt_continue ;;
       "🔄 同步模型")
         echo ""; _sync_one "$pn"; prompt_continue ;;
       "返回"|*) return ;;
@@ -659,7 +665,7 @@ provider_menu() {
       "删除供应商")    delete_provider; prompt_continue ;;
       "同步云端模型")  cmd_sync; prompt_continue ;;
       "🔗 测试所有连接") test_all_providers; prompt_continue ;;
-      "返回主菜单"|*)     return ;;
+      "返回主菜单"|*) return ;;
     esac
   done
 }
