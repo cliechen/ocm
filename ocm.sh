@@ -492,7 +492,7 @@ _edit_submenu() {
         [ -z "$s" ] && continue; test_model_chat "$pn" "$s"; prompt_continue ;;
       "✏️  修改地址")
         local o n; o=$(provider_url "$pn")
-        n=$(gum input --value "$o" --prompt "URL > ") || { warn "已取消"; continue; }
+        n=$(gum input --value "$o" --prompt "URL > ") || { warn "已取消"; prompt_continue; continue; }
         if [ -z "$n" ]; then warn "地址不能为空"; prompt_continue; continue; fi
         n="${n%/}"; backup
         jq --arg p "$pn" --arg u "$n" '.models.providers[$p].baseUrl=$u' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
@@ -500,7 +500,7 @@ _edit_submenu() {
         echo ""; test_provider "$pn" || true
         prompt_continue ;;
       "🔑 修改密钥")
-        local n; n=$(gum input --password --prompt "密钥 > ") || { warn "已取消"; continue; }
+        local n; n=$(gum input --password --prompt "密钥 > ") || { warn "已取消"; prompt_continue; continue; }
         if [ -z "$n" ]; then warn "密钥不能为空"; prompt_continue; continue; fi
         backup
         jq --arg p "$pn" --arg k "$n" '.models.providers[$p].apiKey=$k' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
