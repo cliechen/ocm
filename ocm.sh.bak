@@ -205,7 +205,6 @@ cmd_switch() {
   gum confirm "重启网关生效?" && {
     gum spin --spinner minidot --title "正在重启..." -- openclaw gateway restart 2>/dev/null
     info "网关已重启"
-  prompt_continue
   }
 }
 
@@ -297,7 +296,6 @@ print(json.dumps(result))
 
   info "$pname: 已同步 $model_count 个模型"
   echo ""; test_provider "$pname" || true
-  prompt_continue
 }
 
 # ============================================================
@@ -473,7 +471,6 @@ _edit_submenu() {
         n="${n%/}"; backup
         jq --arg p "$pn" --arg u "$n" '.models.providers[$p].baseUrl=$u' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
         info "地址已更新: $n"
-  prompt_continue
         echo ""; test_provider "$pn" || true
         prompt_continue ;;
       "🔑 修改密钥")
@@ -481,7 +478,6 @@ _edit_submenu() {
         if [ -z "$n" ]; then warn "密钥不能为空"; prompt_continue; continue; fi
         backup
         jq --arg p "$pn" --arg k "$n" '.models.providers[$p].apiKey=$k' "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
-  prompt_continue
         info "密钥已更新"
         echo ""; test_provider "$pn" || true
         prompt_continue ;;
