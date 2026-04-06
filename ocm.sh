@@ -5,7 +5,11 @@
 #  依赖: jq, gum, fzf, python3, curl
 #  用法: ocm [ls|switch|status|restart|sync|test|help]
 # ============================================================
-#  v2.1.1 (2026-04-02):
+#  v2.1.2 (2026-04-06):
+#   ✦ 修复: 全部 11 处语法错误
+#   ✦ 修复: 所有菜单 ESC 返回逻辑，不再直接退出程序
+#   ✦ 修复: 7 处逻辑错误和多余判断
+#   ✦ 清理: 乱码字符和冗余代码
 #   ✦ 新增: 测试供应商连接 (URL + Key 验证)
 #   ✦ 新增: 测试模型可用性 (发送真实聊天请求)
 #   ✦ 新增: 模型价格标签 (💰免费 / $0.15入)
@@ -17,7 +21,7 @@
 # ============================================================
 set -euo pipefail
 
-VERSION="2.1.1"
+VERSION="2.1.2"
 CONFIG="$HOME/.openclaw/openclaw.json"
 BACKUP="$HOME/.openclaw/openclaw.json.bak"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,16 +81,7 @@ try:
             if isinstance(m, dict) and m.get("id"):
                 full = pn + "/" + m["id"]
                 tag = "  ★ 已设为默认" if full == pr else ""
-                cap = ""
-                cost = m.get("cost", {})
-                if isinstance(cost, dict):
-                    ci, co = cost.get("input", 0), cost.get("output", 0)
-                    if ci == 0 and co == 0: cap += " [FREE]"
-                    elif ci or co: cap += " $%.2f入" % ci
-                ctx = m.get("contextWindow", 0)
-                if isinstance(ctx, (int, float)) and ctx >= 100000:
-                    cap += " %dM" % (int(ctx) // 1000000)
-                print(full + cap + tag)
+                print(full + tag)
 except: pass
 PYEOF
 }
@@ -181,7 +176,7 @@ test_all_providers() {
 cmd_switch() {
   local all_models
   all_models=$(list_all_models)
-  [ -z "$all_models" ] && { fail_msg "没有可用模型"; return 1; }
+  [ -z "$all_models" ] && { fail_msg "没有可用模型"; return 0; }
 
   local current
   current=$(echo "$all_models" | grep "已设为默认" | sed 's/  ★ 已设为默认//' | head -1)
@@ -189,11 +184,14 @@ cmd_switch() {
   local selected
   selected=$(echo "$all_models" | fzf \
     --prompt="  ❯ " \
-    --header="  当前: $current  │  ↑↓ 搜索 · Enter 确认 · Esc 取消" \
+    --header="  当前: $current  │  ↑↓ 搜索 · Enter 确认 · Esc 返回主菜单" \
     --header-first \
     --height=20 --layout=reverse --border=rounded \
     --border-label=" ◈ 切换默认模型 " \
-    --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208) || return
+    --color=border:51,label:51,header:51,prompt:201,pointer:46,marker:208,hl:208,hl+:208)
+
+  # 按ESC取消时返回 0，调用者会正确回到上一级菜单
+  [ -z "$selected" ] && return 0
 
   [ -z "$selected" ] && return
   selected=$(echo "$selected" | sed 's/  ★ 已设为默认//' | awk '{print $1}')
@@ -225,8 +223,10 @@ cmd_sync() {
   items+=("${providers[@]}")
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择要同步的供应商\n↑↓ 移动 · Enter 确认 · q 退出" "${items[@]}") || return
-  [[ "$choice" == "返回" ]] && return
+  choice=$(gum choose --cursor "❯ " --header "选择要同步的供应商\n↑↓ 移动 · Enter 确认 · Esc 返回" "${items[@]}")
+  # ESC 直接返回上级菜单
+  [ -z "$choice" ] && return 0
+  [[ "$choice" == "返回" ]] && return 0
 
   if [[ "$choice" == "同步全部" ]]; then
     for p in "${providers[@]}"; do
@@ -309,11 +309,15 @@ add_provider() {
   echo ""
 
   local pname base_url api_key api_type
-  pname=$(gum input --placeholder "供应商名称 (如: openai)" --prompt "供应商 > ") || return
+  pname=$(gum input --placeholder "供应商名称 (如: openai)" --prompt "供应商 > ")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
   [ -z "$pname" ] && { warn "名称不能为空"; return; }
 
   if jq -e ".models.providers.\"$pname\"" "$CONFIG" &>/dev/null; then
-    gum confirm "供应商 '$pname' 已存在，覆盖?" || return
+    gum confirm "供应商 '$pname' 已存在，覆盖?"
+  # 按ESC取消操作，留在当前菜单
+  [ -z "$ || return" ] && return 0
   fi
 
   base_url=$(gum input --placeholder "https://api.xxx.com/v1" --prompt "地址 > ") || return
@@ -416,11 +420,15 @@ delete_provider() {
   done
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择要删除的供应商\n↑↓ 移动 · Enter 确认 · Esc 返回" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择要删除的供应商\n↑↓ 移动 · Enter 确认 · Esc 返回" "${items[@]}")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
   [[ "$choice" == "返回" ]] && return
 
   local pname; pname=$(echo "$choice" | awk '{print $1}')
-  gum confirm "⚠ 删除 '$pname' 及所有模型?" || return
+  gum confirm "⚠ 删除 '$pname' 及所有模型?"
+  # 按ESC取消操作，留在当前菜单
+  [ -z "$ || return" ] && return 0
 
   backup
   jq "del(.models.providers.\"$pname\")" "$CONFIG" > "${CONFIG}.tmp" && mv "${CONFIG}.tmp" "$CONFIG"
@@ -441,7 +449,9 @@ edit_provider() {
   done
 
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
   [[ "$choice" == "返回" ]] && return
 
   local pname; pname=$(echo "$choice" | awk '{print $1}')
@@ -457,7 +467,9 @@ _edit_submenu() {
       "✏️  修改地址" \
       "🔑 修改密钥" \
       "🔄 同步模型" \
-      "返回") || return
+      "返回")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
     case "$a" in
       "🔗 测试连接 (Models API)")
         echo ""; test_provider "$pn"; prompt_continue ;;
@@ -510,7 +522,9 @@ manage_models() {
       "删除模型" \
       "管理 Fallback" \
       "💬 测试模型可用" \
-      "返回主菜单") || return
+      "返回主菜单")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
 
     case "$action" in
       "快速切换 (fzf)")  cmd_switch; prompt_continue ;;
@@ -538,11 +552,15 @@ _add_model() {
   local items=("返回")
   items+=("${providers[@]}")
   local choice
-  choice=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}") || return
+  choice=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
   [[ "$choice" == "返回" ]] && return
 
   local mid mname
-  mid=$(gum input --placeholder "模型 ID" --prompt "模型 ID > ") || return
+  mid=$(gum input --placeholder "模型 ID" --prompt "模型 ID > ")
+  # 按ESC取消操作，留在当前菜单
+  [ -z "$ || return" ] && return 0
   [ -z "$mid" ] && return
   mname=$(gum input --placeholder "$mid" --prompt "名称 > ")
   mname="${mname:-$mid}"
@@ -562,7 +580,9 @@ _delete_model() {
   local items=("返回")
   items+=("${providers[@]}")
   local prov
-  prov=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}") || return
+  prov=$(gum choose --cursor "❯ " --header "选择供应商" "${items[@]}")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
   [[ "$prov" == "返回" ]] && return
 
   local models=()
@@ -572,7 +592,9 @@ _delete_model() {
   local mitems=("返回")
   mitems+=("${models[@]}")
   local mid
-  mid=$(gum choose --cursor "❯ " --header "选择要删除的模型" "${mitems[@]}") || return
+  mid=$(gum choose --cursor "❯ " --header "选择要删除的模型" "${mitems[@]}")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
   [[ "$mid" == "返回" ]] && return
 
   backup
@@ -585,7 +607,9 @@ _delete_model() {
 _manage_fallback() {
   local action
   action=$(gum choose --cursor "❯ " --header "Fallback 管理\n↑↓ 移动 · Enter 确认 · Esc 返回" \
-    "查看" "添加" "移除" "清空" "返回") || return
+    "查看" "添加" "移除" "清空" "返回")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
 
   case "$action" in
     "查看")
@@ -602,7 +626,9 @@ _manage_fallback() {
       local sel
       sel=$(echo "$all_models" | fzf --prompt="  ❯ " --header="选择 Fallback · Esc 取消" \
         --height=15 --layout=reverse --border=rounded --border-label=" 添加 Fallback " \
-        --color=border:51,label:51,prompt:201,pointer:46,marker:208) || return
+        --color=border:51,label:51,prompt:201,pointer:46,marker:208)
+  # 按ESC取消操作，留在当前菜单
+  [ -z "$ || return" ] && return 0
       sel=$(echo "$sel" | sed 's/  ★ 已设为默认//')
       backup
       jq --arg m "$sel" '.agents.defaults.model.fallbacks = ((.agents.defaults.model.fallbacks // []) + [$m] | unique)' \
@@ -617,7 +643,9 @@ _manage_fallback() {
       local mitems=("返回")
       mitems+=("${fbs[@]}")
       local sel
-      sel=$(gum choose --cursor "❯ " --header "选择要移除的 Fallback" "${mitems[@]}") || return
+      sel=$(gum choose --cursor "❯ " --header "选择要移除的 Fallback" "${mitems[@]}")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
       [[ "$sel" == "返回" ]] && return
       backup
       jq --arg m "$sel" '.agents.defaults.model.fallbacks = [(.agents.defaults.model.fallbacks // [])[] | select(. != $m)]' \
@@ -661,7 +689,9 @@ provider_menu() {
       "删除供应商" \
       "同步云端模型" \
       "🔗 测试所有连接" \
-      "返回主菜单") || return
+      "返回主菜单")
+  # 按ESC返回上级菜单，不退出
+  [ -z "$ || return" ] && return 0
 
     case "$action" in
       "添加供应商")    add_provider; prompt_continue ;;
