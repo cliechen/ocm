@@ -47,17 +47,24 @@ install_gum() {
     curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg 2>/dev/null
     echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
     sudo apt update -qq 2>/dev/null && sudo apt install -y -qq gum 2>/dev/null
-  else
-    # 通用: go install 或下载二进制
+  elif command -v brew &>/dev/null; then
+    # macOS: 用 Homebrew, 避免下载 Linux 二进制
+    brew install gum 2>/dev/null
+  elif [ "$(uname -s)" = "Linux" ]; then
+    # Linux: 下载官方二进制
     local arch
     arch=$(uname -m)
     case "$arch" in
       x86_64)  arch="amd64" ;;
-      aarch64) arch="arm64" ;;
+      aarch64|arm64) arch="arm64" ;;
       armv7l)  arch="armv7" ;;
+      *) echo -e "  ${RED}不支持的架构: $arch${NC}"; return 1 ;;
     esac
     local url="https://github.com/charmbracelet/gum/releases/latest/download/gum_0.17.0_Linux_${arch}.tar.gz"
     curl -sL "$url" | sudo tar -xz -C /usr/local/bin gum 2>/dev/null
+  else
+    echo -e "  ${RED}无法自动安装 gum，请手动安装: https://github.com/charmbracelet/gum${NC}"
+    return 1
   fi
 }
 
@@ -118,13 +125,17 @@ chmod +x "${INSTALL_DIR}/ocm"
 
 # PATH
 if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
-  SHELL_RC="${HOME}/.bashrc"
-  [ -n "${ZSH_VERSION:-}" ] && SHELL_RC="${HOME}/.zshrc"
+  # 根据当前 shell 选择 rc 文件
+  case "${SHELL##*/}" in
+    zsh)  SHELL_RC="${HOME}/.zshrc";  PATH_LINE='export PATH="$HOME/.local/bin:$PATH"' ;;
+    fish) SHELL_RC="${HOME}/.config/fish/config.fish"; PATH_LINE='set -gx PATH "$HOME/.local/bin" $PATH' ;;
+    *)    SHELL_RC="${HOME}/.bashrc"; PATH_LINE='export PATH="$HOME/.local/bin:$PATH"' ;;
+  esac
 
   if ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
     echo '' >> "$SHELL_RC"
     echo '# OpenClaw Model Manager' >> "$SHELL_RC"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+    echo "$PATH_LINE" >> "$SHELL_RC"
     echo -e "  ${YELLOW}已添加 PATH 到 $SHELL_RC${NC}"
   fi
   export PATH="$INSTALL_DIR:$PATH"
